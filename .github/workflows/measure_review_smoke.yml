@@ -2,6 +2,9 @@ name: 'Diagnose: Windows GUI Startup'
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - ci-windows-baseline
   pull_request:
     paths:
       - .github/workflows/measure_review_smoke.yml
