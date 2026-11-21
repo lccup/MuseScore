@@ -65,57 +65,30 @@ jobs:
       shell: cmd
       run: buildscripts\ci\windows\build.bat -n %BUILD_NUMBER%
 
-    - name: Collect diagnostic files
-      if: always()
+    - name: Gather error output if build fails
+      if: failure() && hashFiles('build.release/**') != ''
       shell: pwsh
       run: |
-        New-Item -ItemType Directory -Force -Path build.diagnostics | Out-Null
-        @{
-          RUNNER_OS = $env:RUNNER_OS
-          RUNNER_IMAGE_OS = $env:RUNNER_IMAGE_OS
-          RUNNER_IMAGE_VERSION = $env:RUNNER_IMAGE_VERSION
-          ImageOS = $env:ImageOS
-          ImageVersion = $env:ImageVersion
-          GITHUB_SHA = $env:GITHUB_SHA
-          GITHUB_SERVER_URL = $env:GITHUB_SERVER_URL
-        }.GetEnumerator() | ForEach-Object { "$($_.Key)=$($_.Value)" } |
-          Set-Content build.diagnostics/runner.txt
-        $exe = Get-ChildItem -Path build.install -Filter MuseScore4.exe -Recurse -ErrorAction SilentlyContinue |
-          Select-Object -First 1
-        if ($exe) {
-          Copy-Item $exe.FullName build.diagnostics/MuseScore4.exe
-          "'$($exe.FullName)'" | Set-Content build.diagnostics/source-exe.txt
+        $log = Join-Path $env:GITHUB_WORKSPACE 'build.diagnostics/build-errors.txt'
+        New-Item -ItemType Directory -Force (Split-Path $log) | Out-Null
+        $found = $false
+        Get-ChildItem build.release -Recurse -File -Include '*.log', '*.txt' -ErrorAction SilentlyContinue |
+          ForEach-Object {
+            $matches = Select-String -Path $_.FullName -Pattern 'error C\d+|fatal error|FAILED:' -ErrorAction SilentlyContinue
+            if ($matches) {
+              $found = $true
+              $matches | Select-Object -First 30 | ForEach-Object { "$($_.Path):$($_.LineNumber):$($_.Line)" } |
+                Add-Content $log
+            }
+          }
+        if (-not $found) {
+          'No compiler errors found in build.release logs.' | Set-Content $log
         }
-        $env:QT_LOGGING_RULES = 'qt.qpa.*=true'
-        $env:QT_DEBUG_PLUGINS = '1'
-        if ($exe) {
-          Start-Process -FilePath $exe.FullName -WorkingDirectory $exe.DirectoryName
-          Start-Sleep -Seconds 20
-        }
-        Get-Process MuseScore4 -ErrorAction SilentlyContinue |
-          Select-Object Id,ProcessName,Responding,MainWindowTitle,MainWindowHandle,StartTime |
-          Format-List | Out-String | Set-Content build.diagnostics/process.txt
-        Get-CimInstance Win32_Process -Filter "Name = 'MuseScore4.exe'" |
-          Select-Object ProcessId,ExecutablePath,CommandLine |
-          Format-List | Out-String | Set-Content build.diagnostics/process-cmdline.txt
 
-    - name: Close MuseScore
-      if: always()
-      shell: pwsh
-      run: Get-Process MuseScore4 -ErrorAction SilentlyContinue | Stop-Process -Force
-
-    - name: Upload diagnostic files
-      if: always() && hashFiles('build.diagnostics/**') != ''
+    - name: Upload error output
+      if: failure() && hashFiles('build.diagnostics/build-errors.txt') != ''
       uses: actions/upload-artifact@v6
       with:
-        name: measure-review-${{ github.sha }}-diagnostics
-        path: build.diagnostics
-        if-no-files-found: warn
-
-    - name: Upload build artifacts
-      if: always() && hashFiles('build.artifacts/**') != ''
-      uses: actions/upload-artifact@v6
-      with:
-        name: measure-review-${{ github.sha }}-build
-        path: build.artifacts
-        if-no-files-found: warn
+        name: measure-review-${{ github.sha }}-errors
+        path: build.diagnostics/build-errors.txt
+        if-no-files-found: ignore
