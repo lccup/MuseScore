@@ -141,6 +141,11 @@ QString NotationPageModel::selectionFiltersPanelName() const
     return SELECTION_FILTERS_PANEL_NAME;
 }
 
+QString NotationPageModel::measureReviewPanelName() const
+{
+    return MEASURE_REVIEW_PANEL_NAME;
+}
+
 QString NotationPageModel::undoHistoryPanelName() const
 {
     return UNDO_HISTORY_PANEL_NAME;

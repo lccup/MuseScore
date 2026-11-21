@@ -302,6 +302,7 @@ MenuItem* AppMenuModel::makeViewMenu()
         makeMenuItem("toggle-instruments"),
         makeMenuItem("inspector"),
         makeMenuItem("toggle-selection-filter"),
+        makeMenuItem("toggle-measure-review"),
         historyItem,
         makeMenuItem("toggle-navigator"),
         makeMenuItem("toggle-braille-panel"),

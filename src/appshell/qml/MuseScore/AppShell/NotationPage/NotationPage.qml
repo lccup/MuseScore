@@ -360,6 +360,31 @@ DockPage {
         },
 
         DockPanel {
+            id: measureReviewPanel
+
+            objectName: root.pageModel.measureReviewPanelName()
+            title: qsTrc("appshell", "Measure review")
+
+            navigationSection: root.navigationPanelSec(measureReviewPanel.location)
+
+            width: root.verticalPanelDefaultWidth
+            minimumWidth: 200
+            maximumWidth: root.panelMaxDimension
+            minimumHeight: root.panelMinDimension
+            maximumHeight: root.panelMaxDimension
+
+            groupName: root.verticalPanelsGroup
+            location: Location.Right
+            visible: false
+            dropDestinations: root.verticalPanelDropDestinations
+
+            Item {
+                implicitWidth: root.verticalPanelDefaultWidth
+                implicitHeight: 200
+            }
+        },
+
+        DockPanel {
             id: undoHistoryPanel
 
             objectName: root.pageModel.undoHistoryPanelName()
