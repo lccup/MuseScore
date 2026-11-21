@@ -1,0 +1,118 @@
+name: 'Diagnose: Windows GUI Startup'
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/measure_review_smoke.yml
+      - src/app/app_config.h.in
+      - src/appshell/**
+      - src/framework/ui/qml/Muse/Ui/graphicstestobject.*
+
+jobs:
+  smoke:
+    runs-on: windows-2025
+    timeout-minutes: 25
+    steps:
+    - name: Clone repository
+      uses: actions/checkout@v6
+
+    - name: Configure workflow
+      shell: bash
+      run: |
+        bash ./buildscripts/ci/tools/make_build_mode_env.sh -e workflow_dispatch -m devel
+        BUILD_MODE=$(cat ./build.artifacts/env/build_mode.env)
+        bash ./buildscripts/ci/tools/make_build_number.sh "14000"
+        BUILD_NUMBER=$(cat ./build.artifacts/env/build_number.env)
+        echo "BUILD_MODE=$BUILD_MODE" | tee -a $GITHUB_ENV
+        echo "BUILD_NUMBER=$BUILD_NUMBER" | tee -a $GITHUB_ENV
+        echo "DO_UPLOAD_SYMBOLS=false" | tee -a $GITHUB_ENV
+        echo "DO_UPDATE_TS=false" | tee -a $GITHUB_ENV
+        echo "DO_PLACEHOLDER_TRANSLATIONS=true" | tee -a $GITHUB_ENV
+        echo "SENTRY_URL=" | tee -a $GITHUB_ENV
+
+    - name: Setup ccache
+      shell: bash
+      run: |
+        choco install -y ccache
+        bash ./buildscripts/ci/tools/setup_ccache_config.sh
+
+    - name: Install Qt
+      uses: jurplel/install-qt-action@v4
+      with:
+        version: '6.10.2'
+        host: 'windows'
+        target: 'desktop'
+        arch: 'win64_msvc2022_64'
+        modules: 'qt5compat qtnetworkauth qtshadertools qtwebsockets'
+        cache: true
+
+    - name: Setup dependencies
+      run: buildscripts\ci\windows\setup.bat
+
+    - name: Generate _en.ts files
+      shell: bash
+      env:
+        LUPDATE_ARGS: ""
+        POSTPROCESS_ARGS: "--warn-only --generate-placeholder-translations"
+        POSTPROCESS_LAUNCHER: "python3 -X utf8"
+      run: bash ./tools/translations/run_lupdate.sh
+
+    - name: Build
+      shell: cmd
+      run: buildscripts\ci\windows\build.bat -n %BUILD_NUMBER%
+
+    - name: Collect diagnostic files
+      if: always()
+      shell: pwsh
+      run: |
+        New-Item -ItemType Directory -Force -Path build.diagnostics | Out-Null
+        @{
+          RUNNER_OS = $env:RUNNER_OS
+          RUNNER_IMAGE_OS = $env:RUNNER_IMAGE_OS
+          RUNNER_IMAGE_VERSION = $env:RUNNER_IMAGE_VERSION
+          ImageOS = $env:ImageOS
+          ImageVersion = $env:ImageVersion
+          GITHUB_SHA = $env:GITHUB_SHA
+          GITHUB_SERVER_URL = $env:GITHUB_SERVER_URL
+        }.GetEnumerator() | ForEach-Object { "$($_.Key)=$($_.Value)" } |
+          Set-Content build.diagnostics/runner.txt
+        $exe = Get-ChildItem -Path build.install -Filter MuseScore4.exe -Recurse -ErrorAction SilentlyContinue |
+          Select-Object -First 1
+        if ($exe) {
+          Copy-Item $exe.FullName build.diagnostics/MuseScore4.exe
+          "'$($exe.FullName)'" | Set-Content build.diagnostics/source-exe.txt
+        }
+        $env:QT_LOGGING_RULES = 'qt.qpa.*=true'
+        $env:QT_DEBUG_PLUGINS = '1'
+        if ($exe) {
+          Start-Process -FilePath $exe.FullName -WorkingDirectory $exe.DirectoryName
+          Start-Sleep -Seconds 20
+        }
+        Get-Process MuseScore4 -ErrorAction SilentlyContinue |
+          Select-Object Id,ProcessName,Responding,MainWindowTitle,MainWindowHandle,StartTime |
+          Format-List | Out-String | Set-Content build.diagnostics/process.txt
+        Get-CimInstance Win32_Process -Filter "Name = 'MuseScore4.exe'" |
+          Select-Object ProcessId,ExecutablePath,CommandLine |
+          Format-List | Out-String | Set-Content build.diagnostics/process-cmdline.txt
+
+    - name: Close MuseScore
+      if: always()
+      shell: pwsh
+      run: Get-Process MuseScore4 -ErrorAction SilentlyContinue | Stop-Process -Force
+
+    - name: Upload diagnostic files
+      if: always() && hashFiles('build.diagnostics/**') != ''
+      uses: actions/upload-artifact@v6
+      with:
+        name: measure-review-${{ github.sha }}-diagnostics
+        path: build.diagnostics
+        if-no-files-found: warn
+
+    - name: Upload build artifacts
+      if: always() && hashFiles('build.artifacts/**') != ''
+      uses: actions/upload-artifact@v6
+      with:
+        name: measure-review-${{ github.sha }}-build
+        path: build.artifacts
+        if-no-files-found: warn
