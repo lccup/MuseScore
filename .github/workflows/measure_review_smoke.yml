@@ -1,0 +1,94 @@
+name: 'Diagnose: Windows GUI Startup'
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - ci-windows-baseline
+  pull_request:
+    paths:
+      - .github/workflows/measure_review_smoke.yml
+      - src/app/app_config.h.in
+      - src/appshell/**
+      - src/framework/ui/qml/Muse/Ui/graphicstestobject.*
+
+jobs:
+  smoke:
+    runs-on: windows-2025
+    timeout-minutes: 90
+    steps:
+    - name: Clone repository
+      uses: actions/checkout@v6
+
+    - name: Configure workflow
+      shell: bash
+      run: |
+        bash ./buildscripts/ci/tools/make_build_mode_env.sh -e workflow_dispatch -m devel
+        BUILD_MODE=$(cat ./build.artifacts/env/build_mode.env)
+        bash ./buildscripts/ci/tools/make_build_number.sh "14000"
+        BUILD_NUMBER=$(cat ./build.artifacts/env/build_number.env)
+        echo "BUILD_MODE=$BUILD_MODE" | tee -a $GITHUB_ENV
+        echo "BUILD_NUMBER=$BUILD_NUMBER" | tee -a $GITHUB_ENV
+        echo "DO_UPLOAD_SYMBOLS=false" | tee -a $GITHUB_ENV
+        echo "DO_UPDATE_TS=false" | tee -a $GITHUB_ENV
+        echo "DO_PLACEHOLDER_TRANSLATIONS=true" | tee -a $GITHUB_ENV
+        echo "SENTRY_URL=" | tee -a $GITHUB_ENV
+
+    - name: Setup ccache
+      shell: bash
+      run: |
+        choco install -y ccache
+        bash ./buildscripts/ci/tools/setup_ccache_config.sh
+
+    - name: Install Qt
+      uses: jurplel/install-qt-action@v4
+      with:
+        version: '6.10.2'
+        host: 'windows'
+        target: 'desktop'
+        arch: 'win64_msvc2022_64'
+        modules: 'qt5compat qtnetworkauth qtshadertools qtwebsockets'
+        cache: true
+
+    - name: Setup dependencies
+      run: buildscripts\ci\windows\setup.bat
+
+    - name: Generate _en.ts files
+      shell: bash
+      env:
+        LUPDATE_ARGS: ""
+        POSTPROCESS_ARGS: "--warn-only --generate-placeholder-translations"
+        POSTPROCESS_LAUNCHER: "python3 -X utf8"
+      run: bash ./tools/translations/run_lupdate.sh
+
+    - name: Build
+      shell: cmd
+      run: buildscripts\ci\windows\build.bat -n %BUILD_NUMBER%
+
+    - name: Gather error output if build fails
+      if: failure() && hashFiles('build.release/**') != ''
+      shell: pwsh
+      run: |
+        $log = Join-Path $env:GITHUB_WORKSPACE 'build.diagnostics/build-errors.txt'
+        New-Item -ItemType Directory -Force (Split-Path $log) | Out-Null
+        $found = $false
+        Get-ChildItem build.release -Recurse -File -Include '*.log', '*.txt' -ErrorAction SilentlyContinue |
+          ForEach-Object {
+            $matches = Select-String -Path $_.FullName -Pattern 'error C\d+|fatal error|FAILED:' -ErrorAction SilentlyContinue
+            if ($matches) {
+              $found = $true
+              $matches | Select-Object -First 30 | ForEach-Object { "$($_.Path):$($_.LineNumber):$($_.Line)" } |
+                Add-Content $log
+            }
+          }
+        if (-not $found) {
+          'No compiler errors found in build.release logs.' | Set-Content $log
+        }
+
+    - name: Upload error output
+      if: failure() && hashFiles('build.diagnostics/build-errors.txt') != ''
+      uses: actions/upload-artifact@v6
+      with:
+        name: measure-review-${{ github.sha }}-errors
+        path: build.diagnostics/build-errors.txt
+        if-no-files-found: ignore
